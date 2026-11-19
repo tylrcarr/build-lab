@@ -1,0 +1,11 @@
+node_modules/
+dist/
+*.log
+.env*
+
+# IDE settings (machine-specific)
+.idea/
+*.iml
+
+# Claude Code local state
+.claude/
