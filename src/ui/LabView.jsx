@@ -12,8 +12,8 @@ import { META_CAPS, heightMeta, metaGroup, metaOf } from '../meta.js';
 import { BROAD_VARIANTS, VARIANTS } from '../variants.js';
 import { isAnimation } from '../animations.js';
 import { isTakeover } from '../unlocks.js';
-import { MIN_PICKS, TASTE_EVENT, fittedTaste, pairsOf, readTaste, tasteOpts } from '../taste.js';
-import { tasteScore } from '../breakpoints.js';
+import { MIN_PICKS, TASTE_EVENT, ctxGap, fittedTaste, pairsOf, readTaste, tasteOpts } from '../taste.js';
+import { DUNKER, idx, tasteScore } from '../breakpoints.js';
 import { requirementLabel } from '../unlocks.js';
 
 import { ROLES, ROLE_GROUPS, applyRole } from '../roles.js';
@@ -204,7 +204,8 @@ export default function LabView({ prefs, setPrefs, cfg, setCfg, searches, setSea
     const thorough = !!cfg.thorough, withExact = thorough || wide;
     // Each stage owns a slice of the overall bar ([from, to] in %), filled as its jobs finish. With the exact pass after it
     // (comprehensive), the search's stages share the first 62% (raw: a range already on the whole bar).
-    const scale = (pct, raw) => withExact && !raw ? pct * 0.62 : pct;
+    let band = [0, 1]; // a My Meta search per kind of build (below) shares the bar
+    const scale = (pct, raw) => 100 * band[0] + (band[1] - band[0]) * (withExact && !raw ? pct * 0.62 : pct);
     const progress = (label, [from, to], raw = false) => (done, total) => live() && setState(s => ({ ...s,
       progress: { label, done, total, pct: scale(from + (to - from) * (total ? done / total : 0), raw) } }));
     const stage = (label, pct) => live() && setState(s => ({ ...s, progress: { label, pct: scale(pct) } }));
@@ -227,146 +228,179 @@ export default function LabView({ prefs, setPrefs, cfg, setCfg, searches, setSea
     const screen = o => pool.runJobs([{ kind: 'screen', options: { ...where, around: null, opts: o,
       keep: SHORTLIST + 8 * positionsUsed.length } }]); // a few spare: twins (same body at two positions) merge below
     setState({ running: true, started, progress: { label: 'Screening bodies', pct: 1 } });
-    let [scr] = await screen(opts);
-    if (!live()) return;
-    if (scr.error) return setState({ running: false, error: scr.error });
-    // Nothing fits with your breakers: find the version with as few extra as it takes (up to a year's worth) and show it.
-    let needs = null;
-    if (!scr.chosen.length) {
-      setState(s => ({ ...s, progress: { label: 'Checking how many Cap Breakers it needs' } }));
-      const [total] = await pool.runJobs([{ kind: 'minBreakers', options: { ...where, opts } }]);
+    // My Meta: when your answers taught different lessons for builds that dunk and builds that don't (taste.byCtx), the
+    // search runs once per kind: each plans with that kind's weights and a driving dunk limit that keeps it that kind
+    // (planning can't switch weights halfway when a build crosses the line). Results are merged and ranked by your score,
+    // which knows each build's kind.
+    const groups = [...new Set(positionsUsed.map(metaGroup))];
+    const dd = idx.driving_dunk;
+    const branches = opts.taste && groups.some(g => ctxGap(opts.taste, g) >= 1) ? [
+      opts.maximums[dd] >= DUNKER && { branch: 'dunk', opts: { ...opts, minimums: opts.minimums.map((v, i) => i === dd ? Math.max(v, DUNKER) : v), taste: { ...opts.taste, branch: 'dunk' } } },
+      opts.minimums[dd] < DUNKER && { branch: 'nodunk', opts: { ...opts, maximums: opts.maximums.map((v, i) => i === dd ? Math.min(v, DUNKER - 1) : v), taste: { ...opts.taste, branch: 'nodunk' } } },
+    ].filter(Boolean) : [{ branch: null, opts }];
+    const runCore = async (opts, branch) => {
+      let [scr] = await screen(opts);
       if (!live()) return;
-      if (typeof total === 'number') {
-        const have = opts.breakers.general + (opts.breakers.future ?? 0);
-        opts = { ...opts, breakers: { ...opts.breakers, general: total - (opts.breakers.future ?? 0) } };
-        [scr] = await screen(opts);
+      if (scr.error) return setState({ running: false, error: scr.error });
+      // A My Meta branch (dunking / not) that nothing fits is just skipped: the other branch carries the search.
+      if (branch && !scr.chosen.length) return { scr, plans: [], needs: null };
+      // Nothing fits with your breakers: find the version with as few extra as it takes (up to a year's worth) and show it.
+      let needs = null;
+      if (!scr.chosen.length) {
+        setState(s => ({ ...s, progress: { label: 'Checking how many Cap Breakers it needs' } }));
+        const [total] = await pool.runJobs([{ kind: 'minBreakers', options: { ...where, opts } }]);
         if (!live()) return;
-        if (scr.chosen?.length) needs = { have, total };
+        if (typeof total === 'number') {
+          const have = opts.breakers.general + (opts.breakers.future ?? 0);
+          opts = { ...opts, breakers: { ...opts.breakers, general: total - (opts.breakers.future ?? 0) } };
+          [scr] = await screen(opts);
+          if (!live()) return;
+          if (scr.chosen?.length) needs = { have, total };
+        }
       }
+      if (!scr.chosen.length) {
+        setState(s => ({ ...s, progress: { label: 'Finding what blocks the search' } }));
+        const [bl] = await pool.runJobs([{ kind: 'blockers', options: { ...where, opts } }]);
+        if (!live()) return;
+        return setState({ running: false, ms: performance.now() - started,
+          result: { results: [], screened: 0, bodies: scr.bodies, blockers: Array.isArray(bl) ? bl : [] } });
+      }
+      // Comprehensive: the search below plus an exact plan for every height (exactPlan: weight and wingspan picked in the same
+      // solve as the ratings), merged. Measured on five setups (Nov 2026) it beats running the search below with every
+      // archetype and more bodies, at about 60% of the time; on its own the exact plan misses some (a big with an 89 three
+      // minimum gets nothing: its frame is picked after the caps), so it's an addition, not a replacement.
+      const exactPlans = async () => {
+        // Exact search: every height planned exactly with the frame as a decision (exactPlan: weight and wingspan are picked
+        // in the same solve as the ratings, so there's no frame grid, nudging or separate polish), then the leaders re-planned
+        // as other archetypes and, for a PF, from both ways to be meta (the shooter and the rebounder).
+        const hm = ([p, h]) => heightMeta(h, p, opts.heightPeak);
+        const pairs = positionsUsed.flatMap(p => (positions[p] ?? []).filter(r => r.height >= cfg.heights[0] && r.height <= cfg.heights[1]).map(r => [p, r.height]));
+        const peak = Math.max(0, ...pairs.map(hm));
+        const kept = pairs.filter(x => hm(x) >= peak * 0.25);
+        const firsts = await pool.runJobs(kept.map(([position, height]) => ({ kind: 'exact', options: { position, height, opts } })),
+          progress(`Planning every height exactly (${pool.size} at a time)`, [62, 80], true));
+        if (!live()) return null;
+        const plans = firsts.map(r => r && !r.error ? r : null);
+        const ok = plans.filter(Boolean);
+        const leaders = rankPlans(ok.map(r => atBestPosition(r, opts, positionsUsed)), opts).slice(0, 6)
+          .map(x => plans.findIndex(r => r && r.final === x.final)).filter(k => k >= 0);
+        // Phase 1 gives one build per height, so a narrow search (one height) would show one result: spread the second
+        // phase's jobs over however many leaders there are (more archetypes each when there are few).
+        const per = Math.max(2, Math.ceil(16 / Math.max(1, leaders.length)));
+        const jobs = leaders.flatMap(k => [
+          ...archetypeCandidates(plans[k], per).map(type => ({ k, type, from: null })),
+          ...(metaGroup(plans[k].body.position) === 'big' ? [{ k, type: null, from: 'shoot' }, { k, type: null, from: 'boards' }, { k, type: null, from: 'score' }] : []),
+        ]);
+        const slimPlan = r => ({ body: r.body, base: r.base, manual: r.manual, breakers: r.breakers, final: r.final, playerType: r.playerType, value: r.value });
+        const more = await pool.runJobs(jobs.map(({ k, type, from }) => ({ kind: 'exact', options: { position: plans[k].body.position,
+          height: plans[k].body.height, opts, start: slimPlan(plans[k]), type, from } })), progress('Trying other archetypes exactly', [80, 95], true));
+        if (!live()) return null;
+        // Each is its own build (another archetype or way to be meta on that height); ranking and the near-twin merge below
+        // sort out which ones show.
+        more.forEach(x => { if (x && !x.error) plans.push({ ...x, polished: { exact: true } }); });
+        return plans;
+      };
+      let plans;
+      {
+        // Two passes, both spread over every worker: each body in its natural archetype, then the same body forced into
+        // other archetypes (each its own job). An archetype wins on picks + meta (see pickArchetype).
+        const natural = await pool.runJobs(scr.chosen.map(c => ({ kind: 'body', options: { body: c.body, pinned: c.pinned,
+          opts: { ...opts, archetypes: false } } })), progress(`Optimizing bodies (${pool.size} at a time)`, [6, 40]));
+        if (!live()) return;
+        stage('Trying other archetypes', 40);
+        // The best of the natural pass go on, plus the best few of every role searched: a big's natural pass scores lower
+        // than a guard's (the archetype sweep and polish lift bigs most), so an all-positions search used to drop every
+        // center here, though 95-meta centers beat half the final list (Nov 2026).
+        const ranked = rankPlans(natural.filter(r => r && !r.error).map(r => atBestPosition(r, opts, positionsUsed)), opts);
+        const top = ranked.slice(0, MAX_BUILDS + 4 + 2 * (positionsUsed.length - 1));
+        // Per position, not per role: PFs took every "big" slot and centers still never made it.
+        if (positionsUsed.length > 1) for (const p of positionsUsed) top.push(...ranked.filter(r => r.body.position === p && !top.includes(r))
+          .slice(0, Math.max(0, 3 - top.filter(r => r.body.position === p).length)));
+        const finalists = new Set(top.map(r => r.manual + '|' + r.body.height + '|' + r.body.weight + '|' + r.body.wingspan));
+        const isFinalist = r => finalists.has(r.manual + '|' + r.body.height + '|' + r.body.weight + '|' + r.body.wingspan);
+        const alts = natural.flatMap((r, k) => !r || r.error || !isFinalist(r) ? [] : archetypeCandidates(r, 3).map(type => ({ k, type, mustHave: r.seed ? { ...opts.mustHave, [r.seed.name]: r.seed.tier } : opts.mustHave })));
+        const forced = await pool.runJobs(alts.map(({ k, type, mustHave }) => ({ kind: 'body', options: { body: natural[k].body,
+          // beat: the natural plan's score. A forced plan trailing it by more than the take-back pass can add skips that pass.
+          opts: { ...opts, mustHave, forceType: type, archetypes: false, seeds: 0, beat: archetypeScore(natural[k], natural[k].body, opts) } } })),
+          progress('Trying other archetypes on each body', [40, 66]));
+        if (!live()) return;
+        plans = natural.map((first, k) => {
+          if (!first || first.error || !isFinalist(first)) return null;
+          const mine = forced.filter((x, j) => alts[j].k === k && x && !x.error).map((x, j) => ({ ...x, forcedType: x.playerType }));
+          const best = pickArchetype(first, mine, first.body, opts);
+          return best === first ? first : { ...best, archetypeTrick: true, naturalValue: first.value, naturalType: first.playerType };
+        });
+        // Nudge the leaders' frames: a pound or an inch that opens a breakpoint they just miss (see nudgeBodies). Kept only
+        // when the nudged build is really better (picks + meta, the same rule as archetypes).
+        const leaders = withEachPosition(rankPlans(plans.filter(r => r && !r.error), opts), 8);
+        // A preset that wants the longest arms (inside bigs) keeps them: no nudging to shorter ones.
+        const nudges = leaders.flatMap(r => nudgeBodies(r, 3).map(n => ({ r, ...n })))
+          .filter(n => opts.arms !== 'max' || n.body.wingspan >= n.r.body.wingspan);
+        if (nudges.length) {
+          // The nudged body keeps the leader's archetype as the seed: no full archetype sweep (that's 40–70% of a search for the
+          // same results); the polish step below still tries other archetypes on whatever wins.
+          const nudged = await pool.runJobs(nudges.map(n => ({ kind: 'body', options: { body: n.body, opts: { ...opts, archetypes: false } } })),
+            progress('Nudging weight and wingspan toward breakpoints', [66, 78]));
+          if (!live()) return;
+          nudged.forEach((x, j) => {
+            const n = nudges[j], k = plans.indexOf(n.r), cur = plans[k];
+            if (!x || x.error || !cur || archetypeScore(x, n.body, opts) <= archetypeScore(cur, cur.body, opts) + 0.5) return;
+            if (n.opens.every(o => x.final[o.i] < o.m)) return; // better, but not for the reason it was tried
+            plans[k] = { ...x, nudged: { from: n.r.body, opens: n.opens.filter(o => x.final[o.i] >= o.m) } };
+          });
+        }
+        // Polish the leaders: the greedy pass can stop at a worse arrangement than the best for what it reached (clicking
+        // Re-optimize on a result often found a better build). Each leader is re-planned with every worthwhile tier it holds
+        // kept, as its own and the likeliest other archetypes, plus an exact plan around it; the best replaces it.
+        {
+          const ok = plans.filter(r => r && !r.error);
+          const top = withEachPosition(rankPlans(ok.map(r => atBestPosition(r, opts, positionsUsed)), opts), 8).map(x => ok.find(r => r.final === x.final));
+          // 'fresh' = exact plan from scratch: every Cap Breaker off, re-placed by the solver (the greedy pass can't take back
+          // a breaker it placed early on a rating that ends up between breakpoints), for the build's archetype and the likeliest
+          // others (a 6'10" PF's best build was the 5th archetype on the list; the greedy pass never planned for it).
+          const jobs = top.flatMap(r => {
+            const types = [r.playerType, ...archetypeCandidates(r, 2)];
+            const fresh = [r.playerType, ...archetypeCandidates(r, 3)].map(t => 'fresh:' + t);
+            // A PF is a shooter or a rebounder (pfGate): plan the shooter version of every PF-capable leader too.
+            if (positionsUsed.includes('PF') && positionsFor(r.body).includes('PF')) fresh.push('fresh-shoot:' + r.playerType, 'fresh-boards:' + r.playerType);
+            return [null, 'mip', ...new Set(fresh), ...new Set(types)].map(type => ({ r, type }));
+          });
+          const slim = r => ({ body: r.body, base: r.base, manual: r.manual, breakers: r.breakers, final: r.final, playerType: r.playerType });
+          const polished = await pool.runJobs(jobs.map(j => ({ kind: 'polish', options: { plan: slim(j.r), opts, type: j.type } })),
+            progress('Polishing the leaders', [78, 92]));
+          if (!live()) return;
+          polished.forEach((x, j) => {
+            const { r } = jobs[j], k = plans.indexOf(r), cur = plans[k];
+            if (!x || x.error || !cur || archetypeScore(x, x.body, opts) <= archetypeScore(cur, cur.body, opts) + 0.05) return;
+            plans[k] = { ...x, nudged: cur.nudged, polished: { from: archetypeScore(r, r.body, opts), exact: !!x.exact },
+              ...(x.playerType !== r.playerType ? { archetypeTrick: true, naturalValue: r.value, naturalType: r.playerType } : {}) };
+          });
+        }
+      }
+      if (withExact) {
+        const more = await exactPlans();
+        if (!live() || !more) return;
+        plans.push(...more);
+      }
+      return { scr, plans, needs, opts };
+    };
+    let scr = null, plans = [], needs = null;
+    for (const [k, b] of branches.entries()) {
+      band = [k / branches.length, (k + 1) / branches.length];
+      const out = await runCore(b.opts, branches.length > 1 ? b.branch : null);
+      if (!out) return;
+      plans.push(...out.plans);
+      needs ??= out.needs;
+      scr = scr ? { ...scr, screened: scr.screened + out.scr.screened, bodies: scr.bodies + out.scr.bodies, chosen: [...scr.chosen, ...out.scr.chosen] } : out.scr;
+      if (out.needs) opts = { ...opts, breakers: out.opts.breakers };
     }
+    band = [0, 1];
     if (!scr.chosen.length) {
       setState(s => ({ ...s, progress: { label: 'Finding what blocks the search' } }));
       const [bl] = await pool.runJobs([{ kind: 'blockers', options: { ...where, opts } }]);
       if (!live()) return;
       return setState({ running: false, ms: performance.now() - started,
         result: { results: [], screened: 0, bodies: scr.bodies, blockers: Array.isArray(bl) ? bl : [] } });
-    }
-    // Comprehensive: the search below plus an exact plan for every height (exactPlan: weight and wingspan picked in the same
-    // solve as the ratings), merged. Measured on five setups (Nov 2026) it beats running the search below with every
-    // archetype and more bodies, at about 60% of the time; on its own the exact plan misses some (a big with an 89 three
-    // minimum gets nothing: its frame is picked after the caps), so it's an addition, not a replacement.
-    const exactPlans = async () => {
-      // Exact search: every height planned exactly with the frame as a decision (exactPlan: weight and wingspan are picked
-      // in the same solve as the ratings, so there's no frame grid, nudging or separate polish), then the leaders re-planned
-      // as other archetypes and, for a PF, from both ways to be meta (the shooter and the rebounder).
-      const hm = ([p, h]) => heightMeta(h, p, opts.heightPeak);
-      const pairs = positionsUsed.flatMap(p => (positions[p] ?? []).filter(r => r.height >= cfg.heights[0] && r.height <= cfg.heights[1]).map(r => [p, r.height]));
-      const peak = Math.max(0, ...pairs.map(hm));
-      const kept = pairs.filter(x => hm(x) >= peak * 0.25);
-      const firsts = await pool.runJobs(kept.map(([position, height]) => ({ kind: 'exact', options: { position, height, opts } })),
-        progress(`Planning every height exactly (${pool.size} at a time)`, [62, 80], true));
-      if (!live()) return null;
-      const plans = firsts.map(r => r && !r.error ? r : null);
-      const ok = plans.filter(Boolean);
-      const leaders = rankPlans(ok.map(r => atBestPosition(r, opts, positionsUsed)), opts).slice(0, 6)
-        .map(x => plans.findIndex(r => r && r.final === x.final)).filter(k => k >= 0);
-      // Phase 1 gives one build per height, so a narrow search (one height) would show one result: spread the second
-      // phase's jobs over however many leaders there are (more archetypes each when there are few).
-      const per = Math.max(2, Math.ceil(16 / Math.max(1, leaders.length)));
-      const jobs = leaders.flatMap(k => [
-        ...archetypeCandidates(plans[k], per).map(type => ({ k, type, from: null })),
-        ...(metaGroup(plans[k].body.position) === 'big' ? [{ k, type: null, from: 'shoot' }, { k, type: null, from: 'boards' }, { k, type: null, from: 'score' }] : []),
-      ]);
-      const slimPlan = r => ({ body: r.body, base: r.base, manual: r.manual, breakers: r.breakers, final: r.final, playerType: r.playerType, value: r.value });
-      const more = await pool.runJobs(jobs.map(({ k, type, from }) => ({ kind: 'exact', options: { position: plans[k].body.position,
-        height: plans[k].body.height, opts, start: slimPlan(plans[k]), type, from } })), progress('Trying other archetypes exactly', [80, 95], true));
-      if (!live()) return null;
-      // Each is its own build (another archetype or way to be meta on that height); ranking and the near-twin merge below
-      // sort out which ones show.
-      more.forEach(x => { if (x && !x.error) plans.push({ ...x, polished: { exact: true } }); });
-      return plans;
-    };
-    let plans;
-    {
-      // Two passes, both spread over every worker: each body in its natural archetype, then the same body forced into
-      // other archetypes (each its own job). An archetype wins on picks + meta (see pickArchetype).
-      const natural = await pool.runJobs(scr.chosen.map(c => ({ kind: 'body', options: { body: c.body, pinned: c.pinned,
-        opts: { ...opts, archetypes: false } } })), progress(`Optimizing bodies (${pool.size} at a time)`, [6, 40]));
-      if (!live()) return;
-      stage('Trying other archetypes', 40);
-      // The best of the natural pass go on, plus the best few of every role searched: a big's natural pass scores lower
-      // than a guard's (the archetype sweep and polish lift bigs most), so an all-positions search used to drop every
-      // center here, though 95-meta centers beat half the final list (Nov 2026).
-      const ranked = rankPlans(natural.filter(r => r && !r.error).map(r => atBestPosition(r, opts, positionsUsed)), opts);
-      const top = ranked.slice(0, MAX_BUILDS + 4 + 2 * (positionsUsed.length - 1));
-      // Per position, not per role: PFs took every "big" slot and centers still never made it.
-      if (positionsUsed.length > 1) for (const p of positionsUsed) top.push(...ranked.filter(r => r.body.position === p && !top.includes(r))
-        .slice(0, Math.max(0, 3 - top.filter(r => r.body.position === p).length)));
-      const finalists = new Set(top.map(r => r.manual + '|' + r.body.height + '|' + r.body.weight + '|' + r.body.wingspan));
-      const isFinalist = r => finalists.has(r.manual + '|' + r.body.height + '|' + r.body.weight + '|' + r.body.wingspan);
-      const alts = natural.flatMap((r, k) => !r || r.error || !isFinalist(r) ? [] : archetypeCandidates(r, 3).map(type => ({ k, type, mustHave: r.seed ? { ...opts.mustHave, [r.seed.name]: r.seed.tier } : opts.mustHave })));
-      const forced = await pool.runJobs(alts.map(({ k, type, mustHave }) => ({ kind: 'body', options: { body: natural[k].body,
-        // beat: the natural plan's score. A forced plan trailing it by more than the take-back pass can add skips that pass.
-        opts: { ...opts, mustHave, forceType: type, archetypes: false, seeds: 0, beat: archetypeScore(natural[k], natural[k].body, opts) } } })),
-        progress('Trying other archetypes on each body', [40, 66]));
-      if (!live()) return;
-      plans = natural.map((first, k) => {
-        if (!first || first.error || !isFinalist(first)) return null;
-        const mine = forced.filter((x, j) => alts[j].k === k && x && !x.error).map((x, j) => ({ ...x, forcedType: x.playerType }));
-        const best = pickArchetype(first, mine, first.body, opts);
-        return best === first ? first : { ...best, archetypeTrick: true, naturalValue: first.value, naturalType: first.playerType };
-      });
-      // Nudge the leaders' frames: a pound or an inch that opens a breakpoint they just miss (see nudgeBodies). Kept only
-      // when the nudged build is really better (picks + meta, the same rule as archetypes).
-      const leaders = withEachPosition(rankPlans(plans.filter(r => r && !r.error), opts), 8);
-      // A preset that wants the longest arms (inside bigs) keeps them: no nudging to shorter ones.
-      const nudges = leaders.flatMap(r => nudgeBodies(r, 3).map(n => ({ r, ...n })))
-        .filter(n => opts.arms !== 'max' || n.body.wingspan >= n.r.body.wingspan);
-      if (nudges.length) {
-        // The nudged body keeps the leader's archetype as the seed: no full archetype sweep (that's 40–70% of a search for the
-        // same results); the polish step below still tries other archetypes on whatever wins.
-        const nudged = await pool.runJobs(nudges.map(n => ({ kind: 'body', options: { body: n.body, opts: { ...opts, archetypes: false } } })),
-          progress('Nudging weight and wingspan toward breakpoints', [66, 78]));
-        if (!live()) return;
-        nudged.forEach((x, j) => {
-          const n = nudges[j], k = plans.indexOf(n.r), cur = plans[k];
-          if (!x || x.error || !cur || archetypeScore(x, n.body, opts) <= archetypeScore(cur, cur.body, opts) + 0.5) return;
-          if (n.opens.every(o => x.final[o.i] < o.m)) return; // better, but not for the reason it was tried
-          plans[k] = { ...x, nudged: { from: n.r.body, opens: n.opens.filter(o => x.final[o.i] >= o.m) } };
-        });
-      }
-      // Polish the leaders: the greedy pass can stop at a worse arrangement than the best for what it reached (clicking
-      // Re-optimize on a result often found a better build). Each leader is re-planned with every worthwhile tier it holds
-      // kept, as its own and the likeliest other archetypes, plus an exact plan around it; the best replaces it.
-      {
-        const ok = plans.filter(r => r && !r.error);
-        const top = withEachPosition(rankPlans(ok.map(r => atBestPosition(r, opts, positionsUsed)), opts), 8).map(x => ok.find(r => r.final === x.final));
-        // 'fresh' = exact plan from scratch: every Cap Breaker off, re-placed by the solver (the greedy pass can't take back
-        // a breaker it placed early on a rating that ends up between breakpoints), for the build's archetype and the likeliest
-        // others (a 6'10" PF's best build was the 5th archetype on the list; the greedy pass never planned for it).
-        const jobs = top.flatMap(r => {
-          const types = [r.playerType, ...archetypeCandidates(r, 2)];
-          const fresh = [r.playerType, ...archetypeCandidates(r, 3)].map(t => 'fresh:' + t);
-          // A PF is a shooter or a rebounder (pfGate): plan the shooter version of every PF-capable leader too.
-          if (positionsUsed.includes('PF') && positionsFor(r.body).includes('PF')) fresh.push('fresh-shoot:' + r.playerType, 'fresh-boards:' + r.playerType);
-          return [null, 'mip', ...new Set(fresh), ...new Set(types)].map(type => ({ r, type }));
-        });
-        const slim = r => ({ body: r.body, base: r.base, manual: r.manual, breakers: r.breakers, final: r.final, playerType: r.playerType });
-        const polished = await pool.runJobs(jobs.map(j => ({ kind: 'polish', options: { plan: slim(j.r), opts, type: j.type } })),
-          progress('Polishing the leaders', [78, 92]));
-        if (!live()) return;
-        polished.forEach((x, j) => {
-          const { r } = jobs[j], k = plans.indexOf(r), cur = plans[k];
-          if (!x || x.error || !cur || archetypeScore(x, x.body, opts) <= archetypeScore(cur, cur.body, opts) + 0.05) return;
-          plans[k] = { ...x, nudged: cur.nudged, polished: { from: archetypeScore(r, r.body, opts), exact: !!x.exact },
-            ...(x.playerType !== r.playerType ? { archetypeTrick: true, naturalValue: r.value, naturalType: r.playerType } : {}) };
-        });
-      }
-    }
-    if (withExact) {
-      const more = await exactPlans();
-      if (!live() || !more) return;
-      plans.push(...more);
     }
     // Same body dimensions + same ratings at different positions are one build (position only sets the name/meta group).
     // Each is shown as the legal position where it's the most meta.
@@ -543,12 +577,12 @@ export default function LabView({ prefs, setPrefs, cfg, setCfg, searches, setSea
       </div>
       </>}
       {tab === 'advanced' && <div className="algo-row">
-        <span className="muted small">Rank by</span>
+        <span className="muted small" title="Which scoring the solver maximizes while it builds: not a sort of finished results">Search for</span>
         <div className="toggles" role="group" aria-label="Scoring">
           <button className={!mineOn ? 'on' : ''} aria-pressed={!mineOn} disabled={state.running} onClick={() => set({ algorithm: 'house' })}
             title="The Lab's own meta, plus your badge picks">House meta</button>
           <button className={mineOn ? 'on' : ''} aria-pressed={mineOn} disabled={state.running || tastePicks < MIN_PICKS} onClick={() => set({ algorithm: 'mine' })}
-            title={tastePicks < MIN_PICKS ? `Make ${MIN_PICKS}+ picks in My Meta first` : 'The scoring you taught in My Meta (your badge picks are set aside; minimums and must-haves still count)'}>
+            title={tastePicks < MIN_PICKS ? `Make ${MIN_PICKS}+ picks in My Meta first` : 'The solver builds for the scoring you taught in My Meta: your answers set what each badge tier is worth while it searches (your badge picks are set aside; minimums and must-haves still count)'}>
             My Meta ({tastePicks} picks)</button></div>
         {mineOn && <span className="muted small">Your badge importance is set aside; minimums, must-haves and body rules still count.</span>}
       </div>}

@@ -6,6 +6,7 @@ import { heightMeta, metaOf } from '../meta.js';
 import { MIN_PICKS, PRIOR, TASTE_EVENT, TASTE_KEY, agreement, differences, emptyTaste, fittedTaste, learned, nextPair, pairsOf, poolId, scoreOf } from '../taste.js';
 import { usePool } from './LabView.jsx';
 import { BodyLine, MiniRatings } from './common.jsx';
+import { QuestionPanel } from './Questions.jsx';
 
 // My Meta: teach the Lab your own idea of a better build, one matchup at a time, then search with it (Lab → My Meta).
 // The house meta stays the default; this is a second scoring that starts from it (or from scratch) and moves with you.
@@ -23,6 +24,8 @@ export default function TasteView({ library = [], labCfg, setLab, onGoLab, notif
   const pool = usePool();
   const [busy, setBusy] = useState(null);
   const [showHouse, setShowHouse] = useState(false);
+  const [mode, setMode] = useState('questions');
+  const breakers = { general: labCfg?.breakers?.general ?? 8, future: 0, special: { category: labCfg?.breakers?.special?.category ?? '' } };
   const w = useMemo(() => fittedTaste(taste), [taste]);
   const pairs = useMemo(() => pairsOf(taste), [taste]);
   const [pair, setPair] = useState(null);
@@ -89,7 +92,7 @@ export default function TasteView({ library = [], labCfg, setLab, onGoLab, notif
     setTaste(t => ({ ...t, picks: t.picks.slice(0, -1) })); if (byId.get(last.a) && byId.get(last.b)) setPair([byId.get(last.a), byId.get(last.b)]); };
   useEffect(() => {
     const key = e => {
-      if (e.target.closest?.('input, textarea, select')) return;
+      if (mode !== 'matchups' || e.target.closest?.('input, textarea, select')) return;
       if (e.key === 'ArrowLeft') choose(1); else if (e.key === 'ArrowRight') choose(0); else if (e.key === 'ArrowDown') choose(0.5);
       else if (e.key === 's') pickNext(); else if (e.key === 'Backspace') undo(); else return;
       e.preventDefault();
@@ -121,22 +124,28 @@ export default function TasteView({ library = [], labCfg, setLab, onGoLab, notif
   return <section className="taste">
     <div className="taste-head">
       <div><h2>My Meta</h2>
-        <p className="muted">Pick the better build, again and again. Each pick teaches a second scoring of your own: it starts from the house meta
-          {taste.settings.fromHouse === false ? ' (off: you start from scratch)' : ''} and moves wherever your picks disagree with it.
-          After {MIN_PICKS}+ picks, search the Lab with it.</p></div>
+        <p className="muted">Answer questions about trades: which area pays for more passing, how to split points between two ratings.
+          Each answer teaches a second scoring of your own: it starts from the house meta{taste.settings.fromHouse === false ? ' (off: you start from scratch)' : ''} and
+          moves wherever you disagree with it, separately for each kind of build where your answers differ (a dunking big vs. one who
+          doesn't). Then search the Lab with it.</p></div>
       <div className="taste-stats">
-        <span><b>{pairs.length}</b><small>picks</small></span>
-        <span><b>{taste.pool.length}</b><small>builds</small></span>
+        <span><b>{taste.answers?.length ?? 0}</b><small>answers</small></span>
+        {taste.picks.length > 0 && <span><b>{taste.picks.length}</b><small>matchups</small></span>}
         {stats?.mine != null && <span title="Picks predicted right by a model that never saw them (5-fold), decided picks only"><b>{Math.round(100 * stats.mine)}%</b><small>mine predicts you</small></span>}
         {stats && <span title="Picks where the house meta score agrees with you"><b>{Math.round(100 * stats.house)}%</b><small>house agrees</small></span>}
       </div>
     </div>
 
-    {taste.pool.length < 2 ? <div className="taste-empty">
+    <div className="seg-row" role="tablist">
+      <button className={mode === 'questions' ? 'on' : ''} onClick={() => setMode('questions')}>Questions</button>
+      <button className={mode === 'matchups' ? 'on' : ''} onClick={() => setMode('matchups')}>Matchups (two whole builds)</button>
+    </div>
+    {mode === 'questions' && <QuestionPanel taste={taste} setTaste={setTaste} pool={pool} breakers={breakers} notify={notify} />}
+    {mode === 'matchups' && taste.pool.length < 2 ? <div className="taste-empty">
       <p>First, some builds to compare.</p>
       <PoolButtons busy={busy} fromLab={fromLab} fromSaved={fromSaved} generate={generate} library={library} />
     </div> : <>
-      <div className="matchup">
+      {mode === 'matchups' && <div className="matchup">
         {pair ? <>
           {[0, 1].map(s => <MatchCard key={s} x={pair[s]} only={s ? diff.onlyB : diff.onlyA} ratings={diff.ratings.map(r => r.i)} showHouse={showHouse}
             onPick={() => choose(s ? 0 : 1)} side={s ? 'right' : 'left'} />)}
@@ -150,7 +159,7 @@ export default function TasteView({ library = [], labCfg, setLab, onGoLab, notif
             <span className="muted small">Keys: ← → ↓ · S skip · Backspace undo</span>
           </div>
         </> : <p className="muted">You've compared every pair worth asking about: add more builds.</p>}
-      </div>
+      </div>}
 
       <div className="taste-grid">
         <div className="config-block">
@@ -181,14 +190,14 @@ export default function TasteView({ library = [], labCfg, setLab, onGoLab, notif
             ? 'Stiff: it takes many picks to move a weight.' : `Normal: a badge tier moves about ${(PRIOR.tier[1] * 10).toFixed(1)} meta points before it takes much evidence.`}</p>
           <button className="primary" disabled={!ready} onClick={() => { setLab(c => ({ ...c, algorithm: 'mine' })); onGoLab(); notify('Lab set to My Meta. Find builds to search with it.'); }}>
             Search the Lab with My Meta</button>
-          {!ready && <p className="muted small">{MIN_PICKS - pairs.length} more picks first.</p>}
+          {!ready && <p className="muted small">A few more answers first ({pairs.length}/{MIN_PICKS} comparisons; a question counts as one per version you didn't pick).</p>}
           <h4>Builds to compare</h4>
           <PoolButtons busy={busy} fromLab={fromLab} fromSaved={fromSaved} generate={generate} library={library} />
           <div className="row-buttons">
             <button className="mini-btn" onClick={exportPicks}>Export</button>
             <label className="mini-btn file-btn">Import<input type="file" accept="application/json" hidden onChange={e => importPicks(e.target.files[0])} /></label>
-            <button className="mini-btn" disabled={!taste.picks.length && !Object.keys(taste.manual).length}
-              onClick={() => { setTaste(t => ({ ...t, picks: [], manual: {} })); notify('Picks and nudges cleared (builds kept).'); }}>Clear picks</button>
+            <button className="mini-btn" disabled={!taste.picks.length && !taste.answers?.length && !Object.keys(taste.manual).length}
+              onClick={() => { setTaste(t => ({ ...t, picks: [], answers: [], skipped: [], manual: {} })); notify('Answers, picks and nudges cleared (builds kept).'); }}>Clear answers</button>
           </div>
         </div>
       </div>

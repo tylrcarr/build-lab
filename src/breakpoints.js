@@ -130,7 +130,7 @@ function continuousTerms(opts, final = null) {
   const terms = names.map(k => typeof k === 'number' ? k : idx[k]).map(i => [i, (cw[attributes[i].name] ?? 1) * CONTINUOUS_RATE, 99, 0, 99, 0,
     !mine.has(attributes[i].name)]);
   if (opts.taste) for (const k of ['speed', 'agility']) {
-    const w = opts.taste.w[k] ?? 0;
+    const w = tasteW(opts)[k] ?? 0;
     if (w) terms.push([idx[k], META_ONLY * TASTE_SCALE * w / 10, 99]);
   }
   const rate = metaRate(opts);
@@ -147,7 +147,7 @@ const termValue = (w, target, f, floor = 0, ceiling = 99, hit = 0) => w * (Math.
   + 2 * Math.min(f, floor) + (f >= target ? hit : 0));
 const metaRate = opts => opts?.meta === false ? 0 : (opts?.metaRate ?? 1);
 // ---------------------------------------------------------------- My Meta (a scoring you teach it, see taste.js)
-// opts.taste = { w: { feature: weight } }: a Bradley-Terry model fitted to your "this one's better" picks. Its score in
+// opts.taste = { w, byCtx?, branch? }: a Bradley-Terry model fitted to your answers in My Meta (taste.js). Its score in
 // meta points is TASTE_SCALE × Σ w·x, with x from tasteFeatures: the house meta (/10), every badge, takeover and contact-dunk
 // tier step held, the position, height and the two smooth ratings. In the optimizer the house meta keeps its machinery
 // scaled by w.house, and each tier step is worth its weight on top (META_ONLY per meta point, like a pure meta search).
@@ -164,10 +164,18 @@ export function tasteFeatures(final, height, position) {
   return x;
 }
 export const tasteRaw = (x, w) => { let s = 0; for (const k in x) s += (w[k] ?? 0) * x[k]; return s; };
-export const tasteScore = (final, height, position, taste) => TASTE_SCALE * tasteRaw(tasteFeatures(final, height, position), taste.w);
+// Context: what kind of build it is (guard / wing / big, and whether it dunks). A lesson learned on dunking bigs counts
+// most on dunking bigs; taste.byCtx holds the weights for each context with the model's context terms folded in.
+export const DUNKER = 87;
+export const tasteCtx = (position, final) => `${metaGroup(position)}|${final[idx.driving_dunk] >= DUNKER ? 'dunk' : 'nodunk'}`;
+export const tasteScore = (final, height, position, taste) =>
+  TASTE_SCALE * tasteRaw(tasteFeatures(final, height, position), taste.byCtx?.[tasteCtx(position, final)] ?? taste.w);
+// The weights the optimizer plans with: a search branch (taste.branch: 'dunk' / 'nodunk', with the matching driving dunk
+// limit in its options) plans with that context's weights; otherwise the shared ones.
+const tasteW = opts => (opts.taste.branch && opts.position && opts.taste.byCtx?.[`${metaGroup(opts.position)}|${opts.taste.branch}`]) || opts.taste.w;
 // How much the house meta counts: 1 normally, the learned house weight under My Meta.
-const houseRate = opts => opts?.taste ? Math.max(0, opts.taste.w.house ?? 0) : 1;
-const tasteStep = (opts, goal, k) => opts?.taste ? META_ONLY * TASTE_SCALE * (opts.taste.w[goal.name + ':' + k] ?? 0) : 0;
+const houseRate = opts => opts?.taste ? Math.max(0, tasteW(opts).house ?? 0) : 1;
+const tasteStep = (opts, goal, k) => opts?.taste ? META_ONLY * TASTE_SCALE * (tasteW(opts)[goal.name + ':' + k] ?? 0) : 0;
 const tasteUpTo = (opts, goal, rank) => { let s = 0; for (let k = 1; k <= rank; k++) s += tasteStep(opts, goal, k); return s; };
 export function objective(final, height, opts) {
   let v = badgeValue(final, height, opts);

@@ -2,6 +2,7 @@ import { huntBuild, huntScreen } from './hunt.js';
 import { blockers, bodiesFor, exactPlan, minBreakers, optimizeAcross, optimizeBodyFull, polishPlan, screenBodies, tradeOffs } from './breakpoints.js';
 import { setMipSolver } from './mip.js';
 import { heightHeat } from './heights.js';
+import { buildQuestion } from './questions.js';
 import loadHighs from 'highs';
 import highsWasm from 'highs/runtime?url';
 
@@ -14,7 +15,7 @@ const solverReady = loadHighs({ locateFile: () => highsWasm }).then(setMipSolver
 // single-thread 'across' and 'tradeoffs' used by the Builder.
 self.onmessage = async ({ data }) => {
   const { kind, options } = data;
-  if (kind === 'polish' || kind === 'exact' || kind === 'warm') await solverReady;
+  if (kind === 'polish' || kind === 'exact' || kind === 'question' || kind === 'warm') await solverReady;
   if (kind === 'warm') return self.postMessage({ result: true });
   const onProgress = progress => self.postMessage({ progress });
   try {
@@ -44,6 +45,8 @@ self.onmessage = async ({ data }) => {
       self.postMessage({ result: huntBuild(options.candidate, options.opts) });
     } else if (kind === 'heightHeat') {
       self.postMessage({ result: heightHeat(options.positions, options.minimums, options.general, options.category, options.mustHave) });
+    } else if (kind === 'question') {
+      self.postMessage({ result: buildQuestion(options) });
     } else if (kind === 'tradeoffs') {
       self.postMessage({ result: tradeOffs(options.plan, options.opts, { onProgress, focus: options.focus ?? null }) });
     }

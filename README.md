@@ -64,10 +64,16 @@ A body's first optimization takes about 1–2 s.
     to use that many.
   - "What's blocking it" explains searches with no results. Searches can be saved.
   - Click a rating on a result card to open its Cap Breaker chart; click a step to try it.
-- **My Meta** — teach the Lab your own meta: pick the better of two builds (← → ↓ keys), and a Bradley-Terry model
-  fitted to your picks becomes a second scoring, starting from the house meta (or from scratch) with weights per badge
-  tier, takeover, contact dunk, position, height, speed and agility. Shows what it learned (with −/+ nudges), how often
-  it and the house predict you, and your top builds; the Lab's "Rank by → My Meta" searches with it.
+- **My Meta** — teach the Lab your own meta by answering questions about trades. Each question shows a few legal
+  versions of one build that differ only in the trade: "more Pass Accuracy — which area pays for it?" (each version pays
+  from one area; every other rating is pinned) or "how would you split the points between Close Shot and Pass Accuracy?"
+  (every other rating locked; versions are points on the best trade-off curve). Questions are planned exactly in a
+  worker from the positions and heights you use (`src/questions.js`, about 10–20 s each, built ahead while you answer).
+  Answers fit a Bradley-Terry model, starting from the house meta, with weights per badge tier, per badge family (all
+  badges needing an attribute) and per kind of build (guard / wing / big × dunks or not), so a lesson learned on dunking
+  bigs carries to other dunking bigs and only splits off post bigs when your answers there disagree. Two-build matchups
+  are still there and still count. The Lab's "Rank by → My Meta" searches with it; when the kinds of build differ, the
+  search runs once for dunkers and once for non-dunkers (about twice as long).
 - **Builder**
   - Body controls, attribute sliders with linked minimums, body caps and the 99 Overall budget, and Cap Breaker
     ladders.

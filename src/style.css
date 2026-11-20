@@ -892,3 +892,44 @@ input.locked:hover, input.locked:focus { border-color: var(--accent2); }
 .algo-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 6px 0; }
 .potential-gains h4 { color: #fbbf24; }
 @media (max-width: 760px) { .matchup { grid-template-columns: 1fr; } .taste-top { columns: 1; } }
+
+/* My Meta questions */
+.seg-row { display: flex; gap: 6px; }
+.seg-row button.on { background: rgba(255, 90, 31, .18); border-color: var(--accent); color: var(--accent2); font-weight: 700; }
+.question { display: flex; flex-direction: column; gap: 12px; }
+.question-head p { max-width: 920px; }
+.question-wait { display: flex; gap: 12px; align-items: center; padding: 24px; border: 1px dashed var(--line2); border-radius: 12px; }
+.question-cards { display: grid; gap: 10px; }
+.sheet { background: var(--card); border: 1px solid var(--line2); border-radius: 12px; padding: 10px; cursor: pointer; display: flex; flex-direction: column; gap: 8px; min-width: 0; font-size: .84rem; }
+.sheet:hover, .sheet:focus { border-color: var(--accent2); outline: none; }
+.sheet header { display: flex; flex-direction: column; gap: 2px; }
+.sheet header .bodyline { font-size: .76rem; color: var(--muted); }
+.sheet-sum { background: var(--bg2); border-radius: 8px; padding: 6px 8px; font-size: .8rem; min-height: 64px; }
+.sheet-sum div { margin: 2px 0; }
+.sheet-sum .lbl { display: inline-block; width: 62px; font-size: .64rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.sheet-sum .gu { color: var(--great); } .sheet-sum .gd { color: var(--bad); }
+.sheet-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 12px; }
+.sheet-sec > b { display: block; font-size: .64rem; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); margin: 2px 0; }
+.sheet-row { display: flex; justify-content: space-between; padding: 0 4px; border-radius: 4px; }
+.sheet-row.up { background: rgba(74, 222, 128, .12); } .sheet-row.down { background: rgba(255, 77, 109, .12); }
+.sheet-row .v { font-variant-numeric: tabular-nums; }
+.sheet-row .d { font-size: .7rem; margin-left: 5px; }
+.sheet-row.up .d { color: var(--great); } .sheet-row.down .d { color: var(--bad); }
+.qlock { font-size: .65rem; }
+.sheet-chips { display: flex; flex-wrap: wrap; gap: 3px; }
+.bchip { font-size: .68rem; padding: 0 6px; border-radius: 9px; background: var(--card2); color: #cdd5e2; }
+.bchip.t1 { background: rgba(201, 133, 73, .32); } .bchip.t2 { background: rgba(199, 208, 220, .2); } .bchip.t3 { background: rgba(245, 197, 66, .3); }
+.bchip.t4, .bchip.t5 { background: rgba(180, 140, 255, .32); }
+.bchip.up { outline: 2px solid var(--great); } .bchip.down { outline: 2px dashed var(--bad); opacity: .85; }
+@media (max-width: 1100px) { .question-cards { grid-template-columns: 1fr 1fr !important; } }
+@media (max-width: 640px) { .question-cards { grid-template-columns: 1fr !important; } }
+
+.place-picker { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 4px 0 10px; }
+.place-chip { display: inline-flex; align-items: center; border: 1px solid var(--line2); border-radius: 999px; overflow: hidden; }
+.place-chip button { background: none; border: 0; color: var(--muted); padding: 3px 10px; cursor: pointer; font-weight: 600; }
+.place-chip.on { border-color: var(--accent2); }
+.place-chip.on button { color: var(--text, inherit); }
+.place-chip select { background: var(--bg2); border: 0; color: inherit; padding: 2px 4px; font-size: .78rem; }
+.question-cards.still .sheet:hover { border-color: var(--line2); }
+.sheet.tied { border-color: var(--accent2); border-style: dashed; }
+.tie-tag { font-size: .7rem; color: var(--accent2); }
